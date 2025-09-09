@@ -27,6 +27,7 @@ class DatabaseSeeder:
         self.payments = []
         self.group_course_orders = []
         self.private_course_orders = []
+        self.vouchers = []
     
     def connect_database(self):
         """Membuat koneksi ke database"""
@@ -225,11 +226,15 @@ class DatabaseSeeder:
         used_combinations = set()
         
         for coach in self.coaches:
+            min_slots = int(config['slots_per_coach'] * 0.7)
+            max_slots = config['slots_per_coach']
+            target_slots = random.randint(min_slots, max_slots)
+            
             coach_slots_created = 0
-            max_attempts = config['slots_per_coach'] * 3
+            max_attempts = target_slots * 3
             attempts = 0
             
-            while coach_slots_created < config['slots_per_coach'] and attempts < max_attempts:
+            while coach_slots_created < target_slots and attempts < max_attempts:
                 date = start_date + timedelta(days=random.randint(0, total_days))
                 hour = random.randint(config['hours_range'][0], config['hours_range'][1])
                 
@@ -262,48 +267,111 @@ class DatabaseSeeder:
     
     def seed_field_bookings(self):
         """Seeding tabel fieldbookingdetail"""
-        print("Melakukan seeding tabel fieldbookingdetail...")
+        print("Melakukan seeding tabel fieldbookingdetail")
         
-        config = SEEDING_CONFIG['fieldbookingdetail']
-        today = datetime.now().date()
-        start_date = today - timedelta(days=config['days_before'])
-        total_days = config['days_before'] + config['days_ahead']
-        
-        used_field_times = set()
-        
-        for field in self.fields:
-            bookings_for_field = int(config['bookings_percentage'] * total_days * 0.1)
+        for course in self.group_courses:
+            self.cursor.execute("""
+                SELECT field_id, date, start_hour 
+                FROM groupcourses 
+                WHERE course_id = %s
+            """, (course['id'],))
             
-            for _ in range(bookings_for_field):
-                date = start_date + timedelta(days=random.randint(0, total_days))
-                hour = random.randint(6, 20)  
+            course_details = self.cursor.fetchone()
+            if course_details:
+                field_id, date, start_hour = course_details
                 
-                current_hour_combo = (field['id'], date, hour)
-                next_hour_combo = (field['id'], date, hour + 1)
-                
-                if current_hour_combo not in used_field_times and next_hour_combo not in used_field_times:
-                    try:
-                        self.cursor.execute("""
-                            INSERT INTO fieldbookingdetail (field_id, date, hour)
-                            VALUES (%s, %s, %s) RETURNING field_booking_detail_id
-                        """, (field['id'], date, hour))
-                        
-                        booking_id = self.cursor.fetchone()[0]
-                        self.field_bookings.append({
-                            'id': booking_id,
-                            'field_id': field['id'],
-                            'date': date,
-                            'hour': hour
-                        })
-                        
-                        used_field_times.add(current_hour_combo)
-                        used_field_times.add(next_hour_combo)
-                        
-                    except psycopg2.IntegrityError:
-                        self.connection.rollback()
+                try:
+                    self.cursor.execute("""
+                        INSERT INTO fieldbookingdetail (field_id, date, hour)
+                        VALUES (%s, %s, %s) RETURNING field_booking_detail_id
+                    """, (field_id, date, start_hour))
+                    
+                    booking_id = self.cursor.fetchone()[0]
+                    self.field_bookings.append({
+                        'id': booking_id,
+                        'field_id': field_id,
+                        'date': date,
+                        'hour': start_hour,
+                        'course_id': course['id']
+                    })
+                    
+                except psycopg2.IntegrityError:
+                    self.connection.rollback()
+                    print(f"    Warning: Field booking conflict for field {field_id} on {date} at {start_hour}:00")
         
         self.connection.commit()
-        print(f"  Berhasil membuat {len(self.field_bookings)} fieldbookingdetail")
+        print(f"  Berhasil membuat {len(self.field_bookings)} fieldbookingdetail (semua terikat dengan group courses)")
+    
+    def create_payment_for_course(self, course_price, course_type="group"):
+        """Helper method untuk membuat payment saat course order dibuat"""
+        config = SEEDING_CONFIG['payments']
+        status_options = ['waiting', 'accepted', 'rejected']
+        
+        base_amount = course_price
+        additional_fees = random.randint(0, 50000) 
+        total_payment = base_amount + additional_fees
+        
+        status = random.choices(
+            status_options,
+            weights=[
+                config['status_distribution']['waiting'],
+                config['status_distribution']['accepted'],
+                config['status_distribution']['rejected']
+            ]
+        )[0]
+        
+        payment_proof = None
+        if status in ['accepted', 'rejected']:
+            payment_proof = f"Bukti transfer untuk {course_type} course - {self.fake.text(max_nb_chars=50)}"
+        
+        today = datetime.now()
+        start_date = today - timedelta(days=config['days_before'])
+        end_date = today + timedelta(days=config['days_ahead'])
+        payment_date = self.fake.date_time_between(start_date=start_date, end_date=end_date)
+        
+        self.cursor.execute("""
+            INSERT INTO payments (total_payment, payment_proof, status, payment_date)
+            VALUES (%s, %s, %s, %s) RETURNING payment_id
+        """, (total_payment, payment_proof, status, payment_date))
+        
+        payment_id = self.cursor.fetchone()[0]
+        
+        payment_data = {
+            'id': payment_id,
+            'amount': total_payment,
+            'status': status,
+            'date': payment_date
+        }
+        self.payments.append(payment_data)
+        
+        return payment_id, payment_data
+    
+    def try_use_voucher(self, customer_id, payment_id):
+        """Coba gunakan voucher yang tersedia untuk customer, jika ada"""
+        today = datetime.now()
+        
+        available_vouchers = [
+            v for v in self.vouchers 
+            if v['customer_id'] == customer_id 
+            and not v['used'] 
+            and v['expired_at'] > today
+        ]
+        
+        if available_vouchers and random.random() < 0.3: 
+            voucher = max(available_vouchers, key=lambda x: x['discount'])
+            
+            self.cursor.execute("""
+                UPDATE vouchers 
+                SET used = TRUE, payment_id = %s 
+                WHERE voucher_id = %s
+            """, (payment_id, voucher['id']))
+            
+            voucher['used'] = True
+            voucher['payment_id'] = payment_id
+            
+            return voucher
+        
+        return None
     
     def seed_payments(self):
         """Seeding tabel payments"""
@@ -355,33 +423,23 @@ class DatabaseSeeder:
         total_days = config['days_before'] + config['days_ahead']
         sports = ['tennis', 'pickleball', 'padel']
         
-        field_bookings_map = {}
-        for booking in self.field_bookings:
-            field_id = booking['field_id']
-            date = booking['date']
-            hour = booking['hour']
-            
-            if field_id not in field_bookings_map:
-                field_bookings_map[field_id] = set()
-            
-            field_bookings_map[field_id].add((date, hour))
-            field_bookings_map[field_id].add((date, hour + 1))
-        
-        # Create group courses for each coach based on slots_per_coach
         used_combinations = set()
         
         for coach in self.coaches:
+            min_courses = int(config['slots_per_coach'] * 0.7)
+            max_courses = config['slots_per_coach']
+            target_courses = random.randint(min_courses, max_courses)
+            
             coach_courses_created = 0
-            max_attempts = config['slots_per_coach'] * 3
+            max_attempts = target_courses * 3
             attempts = 0
             
-            # Get fields for this coach's sport
             coach_sport_fields = [f for f in self.fields if f['sport'] == coach['sport']]
             
             if not coach_sport_fields:
                 continue
             
-            while coach_courses_created < config['slots_per_coach'] and attempts < max_attempts:
+            while coach_courses_created < target_courses and attempts < max_attempts:
                 date = start_date + timedelta(days=random.randint(0, total_days))
                 start_hour = random.randint(6, 20)
                 field = random.choice(coach_sport_fields)
@@ -391,12 +449,6 @@ class DatabaseSeeder:
                 if combination in used_combinations:
                     attempts += 1
                     continue
-                
-                field_id = field['id']
-                if field_id in field_bookings_map:
-                    if (date, start_hour) in field_bookings_map[field_id] or (date, start_hour + 1) in field_bookings_map[field_id]:
-                        attempts += 1
-                        continue
                 
                 quota = random.randint(config['quota_range'][0], config['quota_range'][1])
                 course_price = random.choice(config['predefined_prices'][coach['sport']])
@@ -424,11 +476,6 @@ class DatabaseSeeder:
                         'price': course_price
                     })
                     
-                    if field_id not in field_bookings_map:
-                        field_bookings_map[field_id] = set()
-                    field_bookings_map[field_id].add((date, start_hour))
-                    field_bookings_map[field_id].add((date, start_hour + 1))
-                    
                     used_combinations.add(combination)
                     coach_courses_created += 1
                     
@@ -446,7 +493,6 @@ class DatabaseSeeder:
         
         config = SEEDING_CONFIG['groupcourseorder']
         customer_users = [u for u in self.users if u['type'] == 'customer']
-        accepted_payments = [p for p in self.payments if p['status'] == 'accepted']
         
         courses_to_order = random.sample(
             self.group_courses,
@@ -454,20 +500,21 @@ class DatabaseSeeder:
         )
         
         for course in courses_to_order:
-            if not accepted_payments:
-                break
-                
             customer = random.choice(customer_users)
-            payment = accepted_payments.pop()
+            pax_count = random.randint(1, min(course['quota'], 10))
+            
+            total_course_price = course['price'] * pax_count
+            
+            payment_id, payment_data = self.create_payment_for_course(total_course_price, "group")
+            
+            used_voucher = self.try_use_voucher(customer['id'], payment_id)
             
             self.cursor.execute("""
                 INSERT INTO groupcourseorder (customer_id, payment_id)
                 VALUES (%s, %s) RETURNING group_course_order_id
-            """, (customer['id'], payment['id']))
+            """, (customer['id'], payment_id))
             
             order_id = self.cursor.fetchone()[0]
-            
-            pax_count = random.randint(1, min(course['quota'], 10))
             
             self.cursor.execute("""
                 INSERT INTO groupcourseorderdetail (group_course_order_id, course_id, pax_count)
@@ -477,19 +524,25 @@ class DatabaseSeeder:
             self.group_course_orders.append({
                 'id': order_id,
                 'course_id': course['id'],
-                'pax_count': pax_count
+                'pax_count': pax_count,
+                'payment_id': payment_id,
+                'payment_status': payment_data['status'],
+                'used_voucher': used_voucher is not None,
+                'voucher_discount': used_voucher['discount'] if used_voucher else 0
             })
         
         self.connection.commit()
-        print(f"  Berhasil membuat {len(self.group_course_orders)} groupcourseorders dan groupcourseorderdetail")
+        
+        voucher_used_count = sum(1 for order in self.group_course_orders if order['used_voucher'])
+        print(f"  Berhasil membuat {len(self.group_course_orders)} group course orders dengan payments")
+        print(f"    {voucher_used_count} orders menggunakan voucher")
     
     def seed_private_course_orders(self):
-        """Seeding tabel privatecourseorder dan privatecourseorderdetail"""
-        print("Melakukan seeding tabel privatecourseorder dan privatecourseorderdetail...")
+        """Seeding tabel privatecourseorder dan privatecourseorderdetail dengan payments"""
+        print("Melakukan seeding tabel privatecourseorder, privatecourseorderdetail, dan payments...")
         
         config = SEEDING_CONFIG['privatecourseorder']
         customer_users = [u for u in self.users if u['type'] == 'customer']
-        accepted_payments = [p for p in self.payments if p['status'] == 'accepted']
         
         availabilities_to_book = random.sample(
             self.coach_availabilities,
@@ -497,16 +550,19 @@ class DatabaseSeeder:
         )
         
         for availability in availabilities_to_book:
-            if not accepted_payments:
-                break
-                
             customer = random.choice(customer_users)
-            payment = accepted_payments.pop()
+            
+            coach_data = next(c for c in self.coaches if c['id'] == availability['coach_id'])
+            coach_price = coach_data['price']
+            
+            payment_id, payment_data = self.create_payment_for_course(coach_price, "private")
+            
+            used_voucher = self.try_use_voucher(customer['id'], payment_id)
             
             self.cursor.execute("""
                 INSERT INTO privatecourseorder (customer_id, payment_id)
                 VALUES (%s, %s) RETURNING private_course_order_id
-            """, (customer['id'], payment['id']))
+            """, (customer['id'], payment_id))
             
             order_id = self.cursor.fetchone()[0]
             
@@ -517,15 +573,22 @@ class DatabaseSeeder:
             
             self.private_course_orders.append({
                 'id': order_id,
-                'availability_id': availability['id']
+                'availability_id': availability['id'],
+                'payment_id': payment_id,
+                'payment_status': payment_data['status'],
+                'used_voucher': used_voucher is not None,
+                'voucher_discount': used_voucher['discount'] if used_voucher else 0
             })
         
         self.connection.commit()
-        print(f"  Berhasil membuat {len(self.private_course_orders)} pesanan privatecourseorder dan privatecourseorderdetail")
+        
+        voucher_used_count = sum(1 for order in self.private_course_orders if order['used_voucher'])
+        print(f"  Berhasil membuat {len(self.private_course_orders)} private course orders dengan payments")
+        print(f"    {voucher_used_count} orders menggunakan voucher")
     
     def seed_vouchers(self):
-        """Seeding tabel vouchers"""
-        print("Melakukan seeding tabel voucher...")
+        """Seeding tabel vouchers - dibuat tanpa payment_id, akan digunakan saat order dibuat"""
+        print("Melakukan seeding tabel voucher (belum terpakai)...")
         
         config = SEEDING_CONFIG['vouchers']
         customer_users = [u for u in self.users if u['type'] == 'customer']
@@ -534,24 +597,29 @@ class DatabaseSeeder:
         past_date = today - timedelta(days=config['days_before'])
         future_date = today + timedelta(days=config['days_ahead'])
         
+        self.vouchers = []
+        
         for customer in customer_users:
             voucher_count = random.randint(1, config['vouchers_per_customer'])
             
             for _ in range(voucher_count):
-                payment = random.choice(self.payments)
                 discount = random.choice(config['predefined_discounts'])
                 
                 expired_at = self.fake.date_time_between(start_date=past_date, end_date=future_date)
                 
-                if expired_at < today:
-                    used = random.random() < (config['used_percentage'] * 1.5)
-                else:
-                    used = random.random() < config['used_percentage']
-                
                 self.cursor.execute("""
                     INSERT INTO vouchers (payment_id, customer_id, discount, expired_at, used)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (payment['id'], customer['id'], discount, expired_at, used))
+                    VALUES (%s, %s, %s, %s, %s) RETURNING voucher_id
+                """, (None, customer['id'], discount, expired_at, False))
+                
+                voucher_id = self.cursor.fetchone()[0]
+                self.vouchers.append({
+                    'id': voucher_id,
+                    'customer_id': customer['id'],
+                    'discount': discount,
+                    'expired_at': expired_at,
+                    'used': False
+                })
         
         self.connection.commit()
         
@@ -570,12 +638,11 @@ class DatabaseSeeder:
             self.seed_coaches()
             self.seed_fields()
             self.seed_coach_availability()
-            self.seed_field_bookings()
-            self.seed_payments()
             self.seed_group_courses()
-            self.seed_group_course_orders()
-            self.seed_private_course_orders()
+            self.seed_field_bookings()
             self.seed_vouchers()
+            self.seed_group_course_orders()  
+            self.seed_private_course_orders()
             
             print("\nSeeding database berhasil diselesaikan!")
             

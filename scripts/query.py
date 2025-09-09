@@ -31,10 +31,86 @@ def query_user_and_order():
     ORDER BY total_orders DESC
     LIMIT 10;
     """
+    
+def query_top_coaches_by_revenue():
+    return """
+    SELECT 
+        c.coach_id,
+        u.full_name AS coach_name,
+        SUM(pcp.price) AS total_revenue
+    FROM coaches c
+    JOIN users u ON c.user_id = u.user_id
+    JOIN privatecourseorder pcp ON c.coach_id = pcp.coach_id
+    GROUP BY c.coach_id, u.full_name
+    ORDER BY total_revenue DESC
+    LIMIT 10;
+    """
+    
+def query_nicho():
+    return """
+    WITH FieldBookingCounts AS (
+        SELECT
+            f.sport,
+            f.field_name,
+            COUNT(fbd.field_id) AS total_bookings,
+            -- Rank fields by booking count within each sport
+            RANK() OVER (PARTITION BY f.sport ORDER BY COUNT(fbd.field_id) DESC) AS ranking
+        FROM
+            fields AS f
+        JOIN
+            fieldbookingdetail AS fbd ON f.field_id = fbd.field_id
+        GROUP BY
+            f.sport,
+            f.field_name
+    )
+    SELECT
+        sport,
+        field_name,
+        total_bookings
+    FROM
+        FieldBookingCounts
+    WHERE
+        ranking = 2;
+    """
+    
+def query_nicho_2():
+    return """
+    WITH GroupCourseCounts AS (
+        SELECT
+            coach_id,
+            COUNT(course_id) AS group_course_count
+        FROM
+            groupcourses
+        GROUP BY
+            coach_id
+    ), PrivateAvailabilityCounts AS (
+        SELECT
+            coach_id,
+            COUNT(coach_availability_id) AS private_availability_count
+        FROM
+            coachavailability
+        GROUP BY
+            coach_id
+    )
+    SELECT
+        c.coach_name,
+        COALESCE(gcc.group_course_count, 0) AS group_courses_handled,
+        COALESCE(pac.private_availability_count, 0) AS private_availabilities,
+        (COALESCE(gcc.group_course_count, 0) + COALESCE(pac.private_availability_count, 0)) AS total_activity_score
+    FROM
+        coaches AS c
+    LEFT JOIN
+        GroupCourseCounts AS gcc ON c.coach_id = gcc.coach_id
+    LEFT JOIN
+        PrivateAvailabilityCounts AS pac ON c.coach_id = pac.coach_id
+    ORDER BY
+        total_activity_score DESC
+    LIMIT 5;
+    """
 
 QUERIES_TO_RUN = [
-    query_select_users,
-    query_user_and_order,
+    query_nicho,
+    query_nicho_2
 ]
 
 def run_queries():
@@ -50,7 +126,7 @@ def run_queries():
             try:
                 start_time = time.time()
                 cur.execute(sql)
-                exec_time = int((time.time() - start_time) * 1000)  # ms
+                exec_time = int((time.time() - start_time) * 1000) 
                 sql_lower = sql.strip().lower()
                 if sql_lower.startswith("select"):
                     rows = cur.fetchall()
