@@ -12,7 +12,7 @@
   ```
   atau install manual:
   ```bash
-  pip install psycopg2-binary faker
+  pip install psycopg2-binary faker tabulate
   ```
 
 ### 2. Konfigurasi Database
