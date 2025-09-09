@@ -14,9 +14,9 @@ DATABASE_CONFIG = {
 # Konfigurasi Seeding
 SEEDING_CONFIG = {
     'users': {
-        'total': 200,
+        'total': 400,
         'admin_count': 5, 
-        'customer_count': 195 
+        'customer_count': 395 
     },
     'coaches': {
         'total': 15,
@@ -41,16 +41,20 @@ SEEDING_CONFIG = {
         }
     },
     'coachavailability': {
-        'slots_per_coach': 20, 
-        'days_ahead': 30, 
+        'slots_per_coach': 100, 
+        'days_before': 500,      
+        'days_ahead': 30,       
         'hours_range': (6, 21)
     },
     'fieldbookingdetail': {
-        'bookings_percentage': 0.3 
+        'bookings_percentage': 0.4,  
+        'days_before': 500,        
+        'days_ahead': 30           
     },
     'groupcourses': {
-        'total': 50,
-        'days_ahead': 30,  
+        'slots_per_coach': 100,  
+        'days_before': 500,        
+        'days_ahead': 30,          
         'quota_range': (5, 20), 
         'predefined_prices': {
             'tennis': [200000, 250000, 300000, 350000, 400000, 450000, 500000],    
@@ -59,22 +63,26 @@ SEEDING_CONFIG = {
         }
     },
     'payments': {
-        'base_count': 50,  
+        'base_count': 800, 
         'status_distribution': {
-            'waiting': 0.2,
-            'accepted': 0.7,
+            'waiting': 0.15,   
+            'accepted': 0.75, 
             'rejected': 0.1
-        }
+        },
+        'days_before': 500,    
+        'days_ahead': 30        
     },
     'groupcourseorder': {
-        'orders_percentage': 0.6  # 60% dari kursus grup akan memiliki pesanan
+        'orders_percentage': 0.6 
     },
     'privatecourseorder': {
-        'orders_percentage': 0.4  # 40% dari ketersediaan coach akan memiliki pesanan privat
+        'orders_percentage': 0.4 
     },
     'vouchers': {
-        'vouchers_per_customer': 2, 
+        'vouchers_per_customer': 5,  
         'predefined_discounts': [5, 10, 15, 20, 25, 30, 35, 40, 50],  
-        'used_percentage': 0.3  
+        'used_percentage': 0.4,     
+        'days_before': 500,         
+        'days_ahead': 90           
     }
 }

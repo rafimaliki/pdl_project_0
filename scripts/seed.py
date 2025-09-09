@@ -217,7 +217,10 @@ class DatabaseSeeder:
         print("Melakukan seeding tabel coachavailability...")
         
         config = SEEDING_CONFIG['coachavailability']
-        start_date = datetime.now().date()
+        today = datetime.now().date()
+        start_date = today - timedelta(days=config['days_before'])
+        end_date = today + timedelta(days=config['days_ahead'])
+        total_days = config['days_before'] + config['days_ahead']
         
         used_combinations = set()
         
@@ -227,7 +230,7 @@ class DatabaseSeeder:
             attempts = 0
             
             while coach_slots_created < config['slots_per_coach'] and attempts < max_attempts:
-                date = start_date + timedelta(days=random.randint(0, config['days_ahead']))
+                date = start_date + timedelta(days=random.randint(0, total_days))
                 hour = random.randint(config['hours_range'][0], config['hours_range'][1])
                 
                 combination = (coach['id'], date, hour)
@@ -262,15 +265,17 @@ class DatabaseSeeder:
         print("Melakukan seeding tabel fieldbookingdetail...")
         
         config = SEEDING_CONFIG['fieldbookingdetail']
-        start_date = datetime.now().date()
+        today = datetime.now().date()
+        start_date = today - timedelta(days=config['days_before'])
+        total_days = config['days_before'] + config['days_ahead']
         
         used_field_times = set()
         
         for field in self.fields:
-            bookings_for_field = int(config['bookings_percentage'] * 20) 
+            bookings_for_field = int(config['bookings_percentage'] * total_days * 0.1)
             
             for _ in range(bookings_for_field):
-                date = start_date + timedelta(days=random.randint(0, 14))
+                date = start_date + timedelta(days=random.randint(0, total_days))
                 hour = random.randint(6, 20)  
                 
                 current_hour_combo = (field['id'], date, hour)
@@ -307,6 +312,10 @@ class DatabaseSeeder:
         config = SEEDING_CONFIG['payments']
         status_options = ['waiting', 'accepted', 'rejected']
         
+        today = datetime.now()
+        start_date = today - timedelta(days=config['days_before'])
+        end_date = today + timedelta(days=config['days_ahead'])
+        
         for i in range(config['base_count']):
             amount = random.randint(100000, 2000000)
             status = random.choices(
@@ -319,7 +328,7 @@ class DatabaseSeeder:
             )[0]
             
             payment_proof = self.fake.text(max_nb_chars=100) if status in ['accepted', 'rejected'] else None
-            payment_date = self.fake.date_time_between(start_date='-30d', end_date='now')
+            payment_date = self.fake.date_time_between(start_date=start_date, end_date=end_date)
             
             self.cursor.execute("""
                 INSERT INTO payments (total_payment, payment_proof, status, payment_date)
@@ -341,7 +350,9 @@ class DatabaseSeeder:
         print("Melakukan seeding tabel groupcourses...")
 
         config = SEEDING_CONFIG['groupcourses']
-        start_date = datetime.now().date()
+        today = datetime.now().date()
+        start_date = today - timedelta(days=config['days_before'])
+        total_days = config['days_before'] + config['days_ahead']
         sports = ['tennis', 'pickleball', 'padel']
         
         field_bookings_map = {}
@@ -356,67 +367,75 @@ class DatabaseSeeder:
             field_bookings_map[field_id].add((date, hour))
             field_bookings_map[field_id].add((date, hour + 1))
         
-        successful_courses = 0
-        max_attempts = config['total'] * 3
+        # Create group courses for each coach based on slots_per_coach
+        used_combinations = set()
         
-        for attempt in range(max_attempts):
-            if successful_courses >= config['total']:
-                break
-                
-            sport = random.choice(sports)
+        for coach in self.coaches:
+            coach_courses_created = 0
+            max_attempts = config['slots_per_coach'] * 3
+            attempts = 0
             
-            sport_coaches = [c for c in self.coaches if c['sport'] == sport]
-            sport_fields = [f for f in self.fields if f['sport'] == sport]
+            # Get fields for this coach's sport
+            coach_sport_fields = [f for f in self.fields if f['sport'] == coach['sport']]
             
-            if not sport_coaches or not sport_fields:
+            if not coach_sport_fields:
                 continue
             
-            coach = random.choice(sport_coaches)
-            field = random.choice(sport_fields)
-            
-            date = start_date + timedelta(days=random.randint(0, config['days_ahead']))
-            start_hour = random.randint(6, 20)
-            
-            field_id = field['id']
-            if field_id in field_bookings_map:
-                if (date, start_hour) in field_bookings_map[field_id] or (date, start_hour + 1) in field_bookings_map[field_id]:
+            while coach_courses_created < config['slots_per_coach'] and attempts < max_attempts:
+                date = start_date + timedelta(days=random.randint(0, total_days))
+                start_hour = random.randint(6, 20)
+                field = random.choice(coach_sport_fields)
+                
+                combination = (coach['id'], field['id'], date, start_hour)
+                
+                if combination in used_combinations:
+                    attempts += 1
                     continue
-            
-            quota = random.randint(config['quota_range'][0], config['quota_range'][1])
-            course_price = random.choice(config['predefined_prices'][sport])
-            
-            try:
-                self.cursor.execute("""
-                    INSERT INTO groupcourses (course_name, coach_id, sport, field_id, date, start_hour, course_price, quota)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING course_id
-                """, (
-                    f"Kursus Grup {sport.capitalize()} {successful_courses + 1}",
-                    coach['id'],
-                    sport,
-                    field['id'],
-                    date,
-                    start_hour,
-                    course_price,
-                    quota
-                ))
                 
-                course_id = self.cursor.fetchone()[0]
-                self.group_courses.append({
-                    'id': course_id,
-                    'sport': sport,
-                    'quota': quota,
-                    'price': course_price
-                })
+                field_id = field['id']
+                if field_id in field_bookings_map:
+                    if (date, start_hour) in field_bookings_map[field_id] or (date, start_hour + 1) in field_bookings_map[field_id]:
+                        attempts += 1
+                        continue
                 
-                if field_id not in field_bookings_map:
-                    field_bookings_map[field_id] = set()
-                field_bookings_map[field_id].add((date, start_hour))
-                field_bookings_map[field_id].add((date, start_hour + 1))
+                quota = random.randint(config['quota_range'][0], config['quota_range'][1])
+                course_price = random.choice(config['predefined_prices'][coach['sport']])
                 
-                successful_courses += 1
+                try:
+                    self.cursor.execute("""
+                        INSERT INTO groupcourses (course_name, coach_id, sport, field_id, date, start_hour, course_price, quota)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING course_id
+                    """, (
+                        f"Kursus Grup {coach['sport'].capitalize()} {len(self.group_courses) + 1}",
+                        coach['id'],
+                        coach['sport'],
+                        field['id'],
+                        date,
+                        start_hour,
+                        course_price,
+                        quota
+                    ))
+                    
+                    course_id = self.cursor.fetchone()[0]
+                    self.group_courses.append({
+                        'id': course_id,
+                        'sport': coach['sport'],
+                        'quota': quota,
+                        'price': course_price
+                    })
+                    
+                    if field_id not in field_bookings_map:
+                        field_bookings_map[field_id] = set()
+                    field_bookings_map[field_id].add((date, start_hour))
+                    field_bookings_map[field_id].add((date, start_hour + 1))
+                    
+                    used_combinations.add(combination)
+                    coach_courses_created += 1
+                    
+                except psycopg2.IntegrityError:
+                    self.connection.rollback()
                 
-            except psycopg2.IntegrityError:
-                self.connection.rollback()
+                attempts += 1
         
         self.connection.commit()
         print(f"  Berhasil membuat {len(self.group_courses)} groupcourses")
@@ -511,6 +530,10 @@ class DatabaseSeeder:
         config = SEEDING_CONFIG['vouchers']
         customer_users = [u for u in self.users if u['type'] == 'customer']
         
+        today = datetime.now()
+        past_date = today - timedelta(days=config['days_before'])
+        future_date = today + timedelta(days=config['days_ahead'])
+        
         for customer in customer_users:
             voucher_count = random.randint(1, config['vouchers_per_customer'])
             
@@ -518,9 +541,12 @@ class DatabaseSeeder:
                 payment = random.choice(self.payments)
                 discount = random.choice(config['predefined_discounts'])
                 
-                expired_at = datetime.now() + timedelta(days=random.randint(1, 90))
+                expired_at = self.fake.date_time_between(start_date=past_date, end_date=future_date)
                 
-                used = random.random() < config['used_percentage']
+                if expired_at < today:
+                    used = random.random() < (config['used_percentage'] * 1.5)
+                else:
+                    used = random.random() < config['used_percentage']
                 
                 self.cursor.execute("""
                     INSERT INTO vouchers (payment_id, customer_id, discount, expired_at, used)
